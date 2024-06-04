@@ -1,0 +1,64 @@
+name: Build and Deploy
+
+env:
+  applicationfolder: aws
+  AWS_REGION: ap-south-1
+
+# Controls when the action will run. Invokes the workflow on push events but only for the main branch
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Permission can be added at job level or workflow level
+permissions:
+  id-token: write # This is required for requesting the JWT
+  contents: read # This is required for actions/checkout
+
+jobs:
+  AssumeRoleAndCallIdentity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Git clone the repository
+        uses: actions/checkout@v3
+
+      - name: configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v1.7.0
+        with:
+          role-to-assume: arn:aws:iam::861423417733:role/GitHubAction-AssumeRoleWithAction
+          #change to reflect your IAM role’s ARN
+          role-session-name: GitHub_to_AWS_via_FederatedOIDC
+          aws-region: ${{ env.AWS_REGION }}
+
+      # SSH Connection
+      - name: Install SSH key
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          ssh-private-key: ${{ secrets.SSH_AWS }}
+
+      # SSH AWS Script
+      - name: Clone repository to /var/www/html
+        run: |
+          mkdir -p ~/.ssh &&
+          echo "${{ secrets.SSH_AWS }}" &&
+          echo "${{ secrets.SSH_AWS }}" > ~/.ssh/id_rsa &&
+          chmod 600 ~/.ssh/id_rsa &&
+          ssh-keyscan -H ec2-65-0-180-108.ap-south-1.compute.amazonaws.com >> ~/.ssh/known_hosts && 
+          cat  ~/.ssh/known_hosts && 
+          ssh -o StrictHostKeyChecking=no ubuntu@ec2-65-0-180-108.ap-south-1.compute.amazonaws.com "sudo chmod -R 777 /var/www/html/aws && ls -la /var/www/html && git clone git@github.com:pamindakw/aws.git /var/www/html/aws"
+
+      # Hello from AWS: WhoAmI
+      - name: Sts GetCallerIdentity
+        run: |
+          aws sts get-caller-identity
+
+      # Check the application-name and deployment group name
+      - name: Create CodeDeploy Deployment
+        id: deploy
+        run: |
+          aws deploy create-deployment \
+            --application-name aws-app \
+            --deployment-group-name aws-app-group \
+            --deployment-config-name CodeDeployDefault.AllAtOnce \
+            --github-location repository=${{ github.repository }},commitId=${{ github.sha }}
